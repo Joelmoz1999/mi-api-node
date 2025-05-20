@@ -5,7 +5,7 @@ const path = require('path');
 const cors = require('cors');
 
 const app = express();
-const port = 5002;
+const port = process.env.PORT || 5002;
 const corsOptions = {
   origin: [
     'https://www.regpropiedadpvm.gob.ec/', // Reemplaza con tu dominio real

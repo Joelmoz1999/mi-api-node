@@ -1,102 +1,98 @@
+require('dotenv').config();
 const express = require('express');
 const { PDFDocument } = require('pdf-lib');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
-const port = 5002;
+const port = process.env.PORT || 5002;
 
-app.use(cors());
-app.use(express.json());
-app.use(express.json({ limit: '10mb' })); // Previene ataques de payload grande
+// Configuración de seguridad
+app.use(helmet());
+app.use(cors({
+  origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : '*',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Limitar peticiones
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 100 // límite de peticiones por IP
+});
+app.use(limiter);
+
+// Middleware para parsear JSON
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Ruta para rellenar el PDF de Gravamen
+// Ruta de health check
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK' });
+});
+
+// Ruta para generar PDF de Gravamen
 app.post('/generar-pdf', async (req, res) => {
-  // Datos de facturación
-  const { nombre, cedulaFacturacion, direccion, correo, telefono } = req.body;
-
-  // Datos de certificación del inmueble
-  const {
-    apellidos,
-    cedulaCertificacion,
-    estadoCivil,
-    lugarInmueble,
-    libro,
-    numeroInscripcion,
-    fechaInscripcion,
-    tomo,
-    repertorio,
-    fichaRegistral,
-    otro,
-    usoCertificacion,
-    especifiqueUso,
-    recepcionDocumento,
-    correoRecepcion,
-    cedulaSolicitante,
-  } = req.body;
-
-  // Validar campos requeridos
-  if (
-    !nombre ||
-    !cedulaFacturacion ||
-    !direccion ||
-    !telefono ||
-    !apellidos ||
-    !cedulaCertificacion ||
-    !lugarInmueble ||
-    
-    !usoCertificacion ||
-    !especifiqueUso ||
-    !recepcionDocumento ||
-    (recepcionDocumento === 'Electrónico' && !correoRecepcion) ||
-    !cedulaSolicitante
-  ) {
-    return res.status(400).json({ message: 'Todos los campos son requeridos.' });
-  }
-
   try {
-    // Ruta al archivo PDF existente
-    const pdfPath = path.join(__dirname, 'pdfs', '2.pdf');
-
-    // Verificar si el archivo PDF existe
-    if (!fs.existsSync(pdfPath)) {
-      console.error('El archivo PDF no se encontró en:', pdfPath);
-      return res.status(404).json({ message: 'El archivo PDF no se encontró.' });
+    // Validación de campos requeridos
+    const requiredFields = [
+      'nombre', 'cedulaFacturacion', 'direccion', 'telefono',
+      'apellidos', 'cedulaCertificacion', 'lugarInmueble',
+      'usoCertificacion', 'especifiqueUso', 'recepcionDocumento',
+      'cedulaSolicitante'
+    ];
+    
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).json({ 
+        message: 'Campos requeridos faltantes',
+        missing: missingFields
+      });
     }
 
-    // Cargar el PDF existente
+    if (req.body.recepcionDocumento === 'Electrónico' && !req.body.correoRecepcion) {
+      return res.status(400).json({ message: 'Correo electrónico requerido para recepción electrónica' });
+    }
+
+    // Ruta al archivo PDF
+    const pdfPath = path.join(__dirname, 'pdfs', '2.pdf');
+    if (!fs.existsSync(pdfPath)) {
+      console.error('Archivo PDF no encontrado');
+      return res.status(500).json({ message: 'Error interno del servidor' });
+    }
+
+    // Procesamiento del PDF
     const pdfBytes = fs.readFileSync(pdfPath);
-
-    // Cargar el PDF con pdf-lib
     const pdfDoc = await PDFDocument.load(pdfBytes);
+    const [page] = pdfDoc.getPages();
 
-    // Obtener la primera página del PDF
-    const pages = pdfDoc.getPages();
-    const firstPage = pages[0];
+    // Función segura para dibujar texto
+    const drawSafeText = (text, x, y, size = 12) => {
+      if (text) page.drawText(String(text), { x, y, size });
+    };
 
-    // Rellenar el PDF con los datos de facturación
-    firstPage.drawText(`${nombre}`, { x: 95, y: 700, size: 12 });
-    firstPage.drawText(`${cedulaFacturacion}`, { x: 300, y: 670, size: 12 });
-    firstPage.drawText(`${direccion}`, { x: 80, y: 650, size: 12 });
-    firstPage.drawText(`${correo}`, { x: 135, y: 625, size: 12 });
-    firstPage.drawText(`${telefono}`, { x: 440, y: 625, size: 12 });
+    // Rellenar campos
+    drawSafeText(req.body.nombre, 95, 700);
+    drawSafeText(req.body.cedulaFacturacion, 300, 670);
+    drawSafeText(req.body.direccion, 80, 650);
+    drawSafeText(req.body.correo, 135, 625);
+    drawSafeText(req.body.telefono, 440, 625);
+    drawSafeText(req.body.apellidos, 95, 570);
+    drawSafeText(req.body.cedulaCertificacion, 390, 540);
+    drawSafeText(req.body.estadoCivil, 140, 525);
+    drawSafeText(req.body.lugarInmueble, 95, 510);
+    drawSafeText(req.body.libro, 150, 450);
+    drawSafeText(req.body.numeroInscripcion, 320, 450);
+    drawSafeText(req.body.fechaInscripcion, 473, 455);
+    drawSafeText(req.body.tomo, 150, 420);
+    drawSafeText(req.body.repertorio, 320, 420);
+    drawSafeText(req.body.fichaRegistral, 490, 420);
+    drawSafeText(req.body.otro || 'N/A', 260, 395);
 
-    // Rellenar el PDF con los datos de certificación del inmueble
-    firstPage.drawText(`${apellidos}`, { x: 95, y: 570, size: 12 });
-    firstPage.drawText(`${cedulaCertificacion}`, { x: 390, y: 540, size: 12 });
-    firstPage.drawText(`${estadoCivil}`, { x: 140, y: 525, size: 12 });
-    firstPage.drawText(`${lugarInmueble}`, { x: 95, y: 510, size: 12 });
-    firstPage.drawText(`${libro}`, { x: 150, y: 450, size: 12 });
-    firstPage.drawText(`${numeroInscripcion}`, { x: 320, y: 450, size: 12 });
-    firstPage.drawText(`${fechaInscripcion}`, { x: 473, y: 455, size: 12 });
-    firstPage.drawText(`${tomo}`, { x: 150, y: 420, size: 12 });
-    firstPage.drawText(`${repertorio}`, { x: 320, y: 420, size: 12 });
-    firstPage.drawText(`${fichaRegistral}`, { x: 490, y: 420, size: 12 });
-    firstPage.drawText(`${otro || 'N/A'}`, { x: 260, y: 395, size: 12 });
-
-    // Marcar la opción seleccionada con una "X"
+    // Marcar opción seleccionada
     const opciones = {
       'Tramites Judiciales': { x: 220, y: 296 },
       'Instituciones Bancarias': { x: 220, y: 260 },
@@ -104,188 +100,132 @@ app.post('/generar-pdf', async (req, res) => {
       'Otro': { x: 220, y: 180 },
     };
 
-    if (opciones[usoCertificacion]) {
-      firstPage.drawText('X', {
-        x: opciones[usoCertificacion].x,
-        y: opciones[usoCertificacion].y,
-        size: 12,
+    if (opciones[req.body.usoCertificacion]) {
+      page.drawText('X', opciones[req.body.usoCertificacion]);
+    }
+
+    drawSafeText(req.body.especifiqueUso || 'N/A', 140, 150);
+
+    // Recepción del documento
+    if (req.body.recepcionDocumento === 'Presencial') {
+      page.drawText('X', { x: 398, y: 308, size: 12 });
+    } else if (req.body.recepcionDocumento === 'Electrónico') {
+      page.drawText('X', { x: 398, y: 280, size: 12 });
+      drawSafeText(req.body.correoRecepcion, 360, 260);
+    }
+
+    // Fecha y lugar
+    const fechaActual = new Date().toLocaleDateString('es-ES', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric'
+    });
+    drawSafeText('Pedro Vicente Maldonado', 400, 225);
+    drawSafeText(fechaActual, 340, 210);
+    drawSafeText(req.body.cedulaSolicitante, 400, 120);
+
+    // Generar y enviar PDF
+    const modifiedPdfBytes = await pdfDoc.save();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename=Formulario_Gravamen.pdf');
+    res.send(modifiedPdfBytes);
+
+  } catch (error) {
+    console.error('Error al generar PDF:', error);
+    res.status(500).json({ message: 'Error al generar el PDF' });
+  }
+});
+
+// Ruta para generar PDF de Búsqueda
+app.post('/generar-pdf-busqueda', async (req, res) => {
+  try {
+    // Validación de campos requeridos
+    const requiredFields = [
+      'nombre', 'cedulaFacturacion', 'direccion', 'telefono',
+      'nombresCompletos', 'cedula', 'estadoCivil',
+      'nombresSolicitante', 'cedulaSolicitante', 'estadoCivilSolicitante',
+      'declaracionUso', 'recepcionDocumento'
+    ];
+    
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).json({ 
+        message: 'Campos requeridos faltantes',
+        missing: missingFields
       });
     }
 
-    // Agregar el campo "Especifique"
-    firstPage.drawText(`${especifiqueUso || 'N/A'}`, {
-      x: 140,
-      y: 150,
-      size: 12,
-    });
-
-    // Rellenar el PDF con los datos de recepción del documento
-    if (recepcionDocumento === 'Presencial') {
-      firstPage.drawText('X', { x: 398, y: 308, size: 12 });
-    } else if (recepcionDocumento === 'Electrónico') {
-      firstPage.drawText('X', { x: 398, y: 280, size: 12 });
-      firstPage.drawText(`${correoRecepcion}`, { x: 360, y: 260, size: 12 });
+    if (req.body.recepcionDocumento === 'Electrónico' && !req.body.correoRecepcion) {
+      return res.status(400).json({ message: 'Correo electrónico requerido para recepción electrónica' });
     }
 
-    // Agregar Lugar y Fecha automáticamente
-    const lugar = 'Pedro Vicente Maldonado';
-    const fechaActual = new Date().toLocaleDateString('es-ES', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    });
-
-    firstPage.drawText(`${lugar}`, { x: 400, y: 225, size: 12 });
-    firstPage.drawText(`${fechaActual}`, { x: 340, y: 210, size: 12 });
-
-    // Agregar Cédula del Solicitante
-    firstPage.drawText(`${cedulaSolicitante}`, { x: 400, y: 120, size: 12 });
-
-    // Guardar el PDF modificado
-    const modifiedPdfBytes = await pdfDoc.save();
-
-    // Guardar el PDF modificado en un archivo temporal
-    const tempFilePath = path.join(__dirname, 'temp.pdf');
-    fs.writeFileSync(tempFilePath, modifiedPdfBytes);
-
-    // Enviar el archivo temporal como respuesta
-    res.download(tempFilePath, 'Formulario_Gravamen.pdf', (err) => {
-      if (err) {
-        console.error('Error al enviar el archivo:', err);
-        res.status(500).json({ message: 'Error al descargar el PDF.' });
-      }
-
-      // Eliminar el archivo temporal después de enviarlo
-      fs.unlinkSync(tempFilePath);
-      console.log('Archivo temporal eliminado.');
-    });
-  } catch (error) {
-    console.error('Error al rellenar el PDF:', error);
-    res.status(500).json({ message: 'Error al generar el PDF' });
-  }
-});
-
-// Ruta para rellenar el PDF de Búsqueda
-app.post('/generar-pdf-busqueda', async (req, res) => {
-  // Datos de facturación (compartidos con gravamen)
-  const { nombre, cedulaFacturacion, direccion, correo, telefono } = req.body;
-
-  // Datos específicos de búsqueda
-  const {
-    nombresCompletos,
-    cedula,
-    estadoCivil,
-    nombresSolicitante,
-    cedulaSolicitante,
-    estadoCivilSolicitante,
-    declaracionUso,
-    recepcionDocumento,
-    correoRecepcion
-  } = req.body;
-
-  // Validar campos requeridos
-  if (
-    !nombre ||
-    !cedulaFacturacion ||
-    !direccion ||
-    !telefono ||
-    !nombresCompletos ||
-    !cedula ||
-    !estadoCivil ||
-    !nombresSolicitante ||
-    !cedulaSolicitante ||
-    !estadoCivilSolicitante ||
-    !declaracionUso ||
-    !recepcionDocumento ||
-    (recepcionDocumento === 'Electrónico' && !correoRecepcion)
-  ) {
-    return res.status(400).json({ message: 'Todos los campos son requeridos.' });
-  }
-
-  try {
-    // Ruta al archivo PDF existente (diferente al de gravamen)
+    // Ruta al archivo PDF
     const pdfPath = path.join(__dirname, 'pdfs', '1.pdf');
-
-    // Verificar si el archivo PDF existe
     if (!fs.existsSync(pdfPath)) {
-      console.error('El archivo PDF no se encontró en:', pdfPath);
-      return res.status(404).json({ message: 'El archivo PDF no se encontró.' });
+      console.error('Archivo PDF no encontrado');
+      return res.status(500).json({ message: 'Error interno del servidor' });
     }
 
-    // Cargar el PDF existente
+    // Procesamiento del PDF
     const pdfBytes = fs.readFileSync(pdfPath);
-
-    // Cargar el PDF con pdf-lib
     const pdfDoc = await PDFDocument.load(pdfBytes);
+    const [page] = pdfDoc.getPages();
 
-    // Obtener la primera página del PDF
-    const pages = pdfDoc.getPages();
-    const firstPage = pages[0];
+    // Función segura para dibujar texto
+    const drawSafeText = (text, x, y, size = 12) => {
+      if (text) page.drawText(String(text), { x, y, size });
+    };
 
-    // Rellenar el PDF con los datos de facturación
+    // Rellenar campos
+    drawSafeText(req.body.nombre, 95, 665);
+    drawSafeText(req.body.cedulaFacturacion, 300, 635);
+    drawSafeText(req.body.direccion, 80, 612);
+    drawSafeText(req.body.correo, 135, 590);
+    drawSafeText(req.body.telefono, 440, 590);
+    drawSafeText(req.body.nombresCompletos, 95, 520);
+    drawSafeText(req.body.cedula, 270, 488);
+    drawSafeText(req.body.estadoCivil, 460, 488);
+    drawSafeText(req.body.nombresSolicitante, 180, 440);
+    drawSafeText(req.body.cedulaSolicitante, 390, 410);
+    drawSafeText(req.body.estadoCivilSolicitante, 140, 388);
+    drawSafeText(req.body.declaracionUso, 110, 366);
 
-
-    firstPage.drawText(`${nombre}`, { x: 95, y: 665, size: 12 });
-    firstPage.drawText(`${cedulaFacturacion}`, { x: 300, y: 635, size: 12 });
-    firstPage.drawText(`${direccion}`, { x: 80, y: 612, size: 12 });
-    firstPage.drawText(`${correo}`, { x: 135, y: 590, size: 12 });
-    firstPage.drawText(`${telefono}`, { x: 440, y: 590, size: 12 });
-
-
-
-    // Rellenar el PDF con los datos de búsqueda
-    firstPage.drawText(`${nombresCompletos}`, { x: 95, y: 520, size: 12 });
-    firstPage.drawText(`${cedula}`, { x: 270, y: 488, size: 12 });
-    firstPage.drawText(`${estadoCivil}`, { x: 460, y: 488, size: 12 });
-    firstPage.drawText(`${nombresSolicitante}`, { x: 180, y: 440, size: 12 });
-    firstPage.drawText(`${cedulaSolicitante}`, { x: 390, y: 410, size: 12 });
-    firstPage.drawText(`${estadoCivilSolicitante}`, { x: 140, y: 388, size: 12 });
-    firstPage.drawText(`${declaracionUso}`, { x: 110, y: 366, size: 12 });
-
-    // Rellenar el PDF con los datos de recepción del documento
-    if (recepcionDocumento === 'Presencial') {
-      firstPage.drawText('X', { x: 161, y: 183, size: 12 });
-    } else if (recepcionDocumento === 'Electrónico') {
-      firstPage.drawText('X', { x: 161, y: 143, size: 12 });
-      firstPage.drawText(`${correoRecepcion}`, { x: 80, y: 107, size: 12 });
+    // Recepción del documento
+    if (req.body.recepcionDocumento === 'Presencial') {
+      page.drawText('X', { x: 161, y: 183, size: 12 });
+    } else if (req.body.recepcionDocumento === 'Electrónico') {
+      page.drawText('X', { x: 161, y: 143, size: 12 });
+      drawSafeText(req.body.correoRecepcion, 80, 107);
     }
 
-    // Agregar Lugar y Fecha automáticamente
-    const lugar = 'Pedro Vicente Maldonado';
+    // Fecha y lugar
     const fechaActual = new Date().toLocaleDateString('es-ES', {
       day: 'numeric',
       month: 'long',
-      year: 'numeric',
+      year: 'numeric'
     });
+    drawSafeText('Pedro Vicente Maldonado', 390, 222);
+    drawSafeText(fechaActual, 340, 200);
 
-    firstPage.drawText(`${lugar}`, { x: 390, y: 222, size: 12 });
-    firstPage.drawText(`${fechaActual}`, { x: 340, y: 200, size: 12 });
-
-    // Guardar el PDF modificado
+    // Generar y enviar PDF
     const modifiedPdfBytes = await pdfDoc.save();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename=Formulario_Busqueda.pdf');
+    res.send(modifiedPdfBytes);
 
-    // Guardar el PDF modificado en un archivo temporal
-    const tempFilePath = path.join(__dirname, 'temp.pdf');
-    fs.writeFileSync(tempFilePath, modifiedPdfBytes);
-
-    // Enviar el archivo temporal como respuesta
-    res.download(tempFilePath, 'Formulario_Busqueda.pdf', (err) => {
-      if (err) {
-        console.error('Error al enviar el archivo:', err);
-        res.status(500).json({ message: 'Error al descargar el PDF.' });
-      }
-
-      // Eliminar el archivo temporal después de enviarlo
-      fs.unlinkSync(tempFilePath);
-      console.log('Archivo temporal eliminado.');
-    });
   } catch (error) {
-    console.error('Error al rellenar el PDF:', error);
+    console.error('Error al generar PDF:', error);
     res.status(500).json({ message: 'Error al generar el PDF' });
   }
 });
 
-// Iniciar el servidor
+// Manejo de errores
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ message: 'Error interno del servidor' });
+});
+
+// Iniciar servidor
 app.listen(port, () => {
-  console.log(`Servidor backend escuchando en http://localhost:${port}`);
+  console.log(`Servidor backend escuchando en el puerto ${port}`);
 });

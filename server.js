@@ -6,6 +6,14 @@ const cors = require('cors');
 
 const app = express();
 const port = 5002;
+const corsOptions = {
+  origin: [
+    'https://www.regpropiedadpvm.gob.ec/', // Reemplaza con tu dominio real
+    'http://localhost:3000'  // Para desarrollo
+  ],
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type']
+};
 
 app.use(cors());
 app.use(express.json());

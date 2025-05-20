@@ -1,282 +1,291 @@
-require('dotenv').config();
 const express = require('express');
 const { PDFDocument } = require('pdf-lib');
 const fs = require('fs');
 const path = require('path');
 const cors = require('cors');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 
 const app = express();
-const port = process.env.PORT || 10000;
+const port = 5002;
 
-// 1. Configuración de Seguridad
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:"],
-      connectSrc: ["'self'", process.env.REACT_APP_API_URL]
-    }
-  },
-  crossOriginResourcePolicy: { policy: "same-site" }
-}));
+app.use(cors());
+app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Previene ataques de payload grande
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// 2. Configuración CORS
-const allowedOrigins = [
-  'https://www.regpropiedadpvm.gob.ec',
-  'https://regpropiedadpvm.gob.ec',
-  process.env.REACT_APP_API_URL
-];
-
-if (process.env.NODE_ENV === 'development') {
-  allowedOrigins.push('http://localhost:3000');
-}
-
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Origen no permitido por CORS'));
-    }
-  },
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
-
-// 3. Rate Limiting
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: {
-    success: false,
-    message: 'Demasiadas solicitudes desde esta IP'
-  }
-});
-
-app.use(apiLimiter);
-
-// 4. Middlewares
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true, limit: '5mb' }));
-
-// 5. Funciones para generación de PDFs
-const handlePdfGeneration = async (req, res, templateName, fieldsConfig, filename) => {
-  try {
-    const templatePath = path.join(__dirname, 'pdfs', templateName);
-    
-    if (!fs.existsSync(templatePath)) {
-      throw new Error('Plantilla PDF no encontrada');
-    }
-
-    const pdfBytes = fs.readFileSync(templatePath);
-    const pdfDoc = await PDFDocument.load(pdfBytes);
-    const page = pdfDoc.getPages()[0];
-
-    // Aplicar configuración de campos
-    Object.entries(fieldsConfig(req.body)).forEach(([key, value]) => {
-      if (value?.x !== undefined && value?.y !== undefined) {
-        page.drawText(value.text || '', { 
-          x: value.x, 
-          y: value.y, 
-          size: value.size || 12 
-        });
-      }
-    });
-
-    const modifiedPdfBytes = await pdfDoc.save();
-    
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
-    res.send(modifiedPdfBytes);
-
-  } catch (error) {
-    console.error(`Error generando PDF (${filename}):`, error);
-    throw error;
-  }
-};
-
-// 6. Configuración de campos para Gravamen
-const gravamenFields = (body) => {
-  const fechaActual = new Date().toLocaleDateString('es-ES', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric'
-  });
-
-  const fields = {
-    // Datos de facturación
-    nombre: { x: 95, y: 700, text: body.nombre },
-    cedulaFacturacion: { x: 300, y: 670, text: body.cedulaFacturacion },
-    direccion: { x: 80, y: 650, text: body.direccion },
-    correo: { x: 135, y: 625, text: body.correo || '' },
-    telefono: { x: 440, y: 625, text: body.telefono },
-    
-    // Datos de certificación
-    apellidos: { x: 95, y: 570, text: body.apellidos },
-    cedulaCertificacion: { x: 390, y: 540, text: body.cedulaCertificacion },
-    estadoCivil: { x: 140, y: 525, text: body.estadoCivil || '' },
-    lugarInmueble: { x: 95, y: 510, text: body.lugarInmueble },
-    libro: { x: 150, y: 450, text: body.libro || '' },
-    numeroInscripcion: { x: 320, y: 450, text: body.numeroInscripcion || '' },
-    fechaInscripcion: { x: 473, y: 455, text: body.fechaInscripcion || '' },
-    tomo: { x: 150, y: 420, text: body.tomo || '' },
-    repertorio: { x: 320, y: 420, text: body.repertorio || '' },
-    fichaRegistral: { x: 490, y: 420, text: body.fichaRegistral || '' },
-    otro: { x: 260, y: 395, text: body.otro || 'N/A' },
-    especifiqueUso: { x: 140, y: 150, text: body.especifiqueUso || 'N/A' },
-    lugar: { x: 400, y: 225, text: 'Pedro Vicente Maldonado' },
-    fechaActual: { x: 340, y: 210, text: fechaActual },
-    cedulaSolicitante: { x: 400, y: 120, text: body.cedulaSolicitante }
-  };
-
-  // Opciones de uso
-  const opcionesUso = {
-    'Tramites Judiciales': { x: 220, y: 296 },
-    'Instituciones Bancarias': { x: 220, y: 260 },
-    'Instituciones Publicas': { x: 220, y: 221 },
-    'Otro': { x: 220, y: 180 }
-  };
-
-  if (opcionesUso[body.usoCertificacion]) {
-    fields.marcarUso = {
-      x: opcionesUso[body.usoCertificacion].x,
-      y: opcionesUso[body.usoCertificacion].y,
-      text: 'X'
-    };
-  }
-
-  // Recepción de documento
-  if (body.recepcionDocumento === 'Presencial') {
-    fields.marcarRecepcion = { x: 398, y: 308, text: 'X' };
-  } else if (body.recepcionDocumento === 'Electrónico') {
-    fields.marcarRecepcion = { x: 398, y: 280, text: 'X' };
-    fields.correoRecepcion = { x: 360, y: 260, text: body.correoRecepcion || '' };
-  }
-
-  return fields;
-};
-
-// 7. Configuración de campos para Búsqueda
-const busquedaFields = (body) => {
-  const fechaActual = new Date().toLocaleDateString('es-ES', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric'
-  });
-
-  const fields = {
-    // Datos de facturación
-    nombre: { x: 95, y: 665, text: body.nombre },
-    cedulaFacturacion: { x: 300, y: 635, text: body.cedulaFacturacion },
-    direccion: { x: 80, y: 612, text: body.direccion },
-    correo: { x: 135, y: 590, text: body.correo || '' },
-    telefono: { x: 440, y: 590, text: body.telefono },
-    
-    // Datos de búsqueda
-    nombresCompletos: { x: 95, y: 520, text: body.nombresCompletos },
-    cedula: { x: 270, y: 488, text: body.cedula },
-    estadoCivil: { x: 460, y: 488, text: body.estadoCivil },
-    nombresSolicitante: { x: 180, y: 440, text: body.nombresSolicitante },
-    cedulaSolicitante: { x: 390, y: 410, text: body.cedulaSolicitante },
-    estadoCivilSolicitante: { x: 140, y: 388, text: body.estadoCivilSolicitante },
-    declaracionUso: { x: 110, y: 366, text: body.declaracionUso },
-    lugar: { x: 390, y: 222, text: 'Pedro Vicente Maldonado' },
-    fechaActual: { x: 340, y: 200, text: fechaActual }
-  };
-
-  // Recepción de documento
-  if (body.recepcionDocumento === 'Presencial') {
-    fields.marcarRecepcion = { x: 161, y: 183, text: 'X' };
-  } else if (body.recepcionDocumento === 'Electrónico') {
-    fields.marcarRecepcion = { x: 161, y: 143, text: 'X' };
-    fields.correoRecepcion = { x: 80, y: 107, text: body.correoRecepcion || '' };
-  }
-
-  return fields;
-};
-
-// 8. Rutas
+// Ruta para rellenar el PDF de Gravamen
 app.post('/generar-pdf', async (req, res) => {
-  try {
-    const requiredFields = [
-      'nombre', 'cedulaFacturacion', 'direccion', 'telefono',
-      'apellidos', 'cedulaCertificacion', 'lugarInmueble',
-      'usoCertificacion', 'especifiqueUso', 'recepcionDocumento',
-      'cedulaSolicitante'
-    ];
+  // Datos de facturación
+  const { nombre, cedulaFacturacion, direccion, correo, telefono } = req.body;
+
+  // Datos de certificación del inmueble
+  const {
+    apellidos,
+    cedulaCertificacion,
+    estadoCivil,
+    lugarInmueble,
+    libro,
+    numeroInscripcion,
+    fechaInscripcion,
+    tomo,
+    repertorio,
+    fichaRegistral,
+    otro,
+    usoCertificacion,
+    especifiqueUso,
+    recepcionDocumento,
+    correoRecepcion,
+    cedulaSolicitante,
+  } = req.body;
+
+  // Validar campos requeridos
+  if (
+    !nombre ||
+    !cedulaFacturacion ||
+    !direccion ||
+    !telefono ||
+    !apellidos ||
+    !cedulaCertificacion ||
+    !lugarInmueble ||
     
-    const missingFields = requiredFields.filter(field => !req.body[field]);
-    if (missingFields.length > 0) {
-      throw new Error(`Faltan campos requeridos: ${missingFields.join(', ')}`);
+    !usoCertificacion ||
+    !especifiqueUso ||
+    !recepcionDocumento ||
+    (recepcionDocumento === 'Electrónico' && !correoRecepcion) ||
+    !cedulaSolicitante
+  ) {
+    return res.status(400).json({ message: 'Todos los campos son requeridos.' });
+  }
+
+  try {
+    // Ruta al archivo PDF existente
+    const pdfPath = path.join(__dirname, 'pdfs', '2.pdf');
+
+    // Verificar si el archivo PDF existe
+    if (!fs.existsSync(pdfPath)) {
+      console.error('El archivo PDF no se encontró en:', pdfPath);
+      return res.status(404).json({ message: 'El archivo PDF no se encontró.' });
     }
 
-    await handlePdfGeneration(req, res, '2.pdf', gravamenFields, 'Formulario_Gravamen.pdf');
-  } catch (error) {
-    res.status(400).json({ 
-      success: false,
-      message: error.message
+    // Cargar el PDF existente
+    const pdfBytes = fs.readFileSync(pdfPath);
+
+    // Cargar el PDF con pdf-lib
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+
+    // Obtener la primera página del PDF
+    const pages = pdfDoc.getPages();
+    const firstPage = pages[0];
+
+    // Rellenar el PDF con los datos de facturación
+    firstPage.drawText(`${nombre}`, { x: 95, y: 700, size: 12 });
+    firstPage.drawText(`${cedulaFacturacion}`, { x: 300, y: 670, size: 12 });
+    firstPage.drawText(`${direccion}`, { x: 80, y: 650, size: 12 });
+    firstPage.drawText(`${correo}`, { x: 135, y: 625, size: 12 });
+    firstPage.drawText(`${telefono}`, { x: 440, y: 625, size: 12 });
+
+    // Rellenar el PDF con los datos de certificación del inmueble
+    firstPage.drawText(`${apellidos}`, { x: 95, y: 570, size: 12 });
+    firstPage.drawText(`${cedulaCertificacion}`, { x: 390, y: 540, size: 12 });
+    firstPage.drawText(`${estadoCivil}`, { x: 140, y: 525, size: 12 });
+    firstPage.drawText(`${lugarInmueble}`, { x: 95, y: 510, size: 12 });
+    firstPage.drawText(`${libro}`, { x: 150, y: 450, size: 12 });
+    firstPage.drawText(`${numeroInscripcion}`, { x: 320, y: 450, size: 12 });
+    firstPage.drawText(`${fechaInscripcion}`, { x: 473, y: 455, size: 12 });
+    firstPage.drawText(`${tomo}`, { x: 150, y: 420, size: 12 });
+    firstPage.drawText(`${repertorio}`, { x: 320, y: 420, size: 12 });
+    firstPage.drawText(`${fichaRegistral}`, { x: 490, y: 420, size: 12 });
+    firstPage.drawText(`${otro || 'N/A'}`, { x: 260, y: 395, size: 12 });
+
+    // Marcar la opción seleccionada con una "X"
+    const opciones = {
+      'Tramites Judiciales': { x: 220, y: 296 },
+      'Instituciones Bancarias': { x: 220, y: 260 },
+      'Instituciones Publicas': { x: 220, y: 221 },
+      'Otro': { x: 220, y: 180 },
+    };
+
+    if (opciones[usoCertificacion]) {
+      firstPage.drawText('X', {
+        x: opciones[usoCertificacion].x,
+        y: opciones[usoCertificacion].y,
+        size: 12,
+      });
+    }
+
+    // Agregar el campo "Especifique"
+    firstPage.drawText(`${especifiqueUso || 'N/A'}`, {
+      x: 140,
+      y: 150,
+      size: 12,
     });
+
+    // Rellenar el PDF con los datos de recepción del documento
+    if (recepcionDocumento === 'Presencial') {
+      firstPage.drawText('X', { x: 398, y: 308, size: 12 });
+    } else if (recepcionDocumento === 'Electrónico') {
+      firstPage.drawText('X', { x: 398, y: 280, size: 12 });
+      firstPage.drawText(`${correoRecepcion}`, { x: 360, y: 260, size: 12 });
+    }
+
+    // Agregar Lugar y Fecha automáticamente
+    const lugar = 'Pedro Vicente Maldonado';
+    const fechaActual = new Date().toLocaleDateString('es-ES', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+
+    firstPage.drawText(`${lugar}`, { x: 400, y: 225, size: 12 });
+    firstPage.drawText(`${fechaActual}`, { x: 340, y: 210, size: 12 });
+
+    // Agregar Cédula del Solicitante
+    firstPage.drawText(`${cedulaSolicitante}`, { x: 400, y: 120, size: 12 });
+
+    // Guardar el PDF modificado
+    const modifiedPdfBytes = await pdfDoc.save();
+
+    // Guardar el PDF modificado en un archivo temporal
+    const tempFilePath = path.join(__dirname, 'temp.pdf');
+    fs.writeFileSync(tempFilePath, modifiedPdfBytes);
+
+    // Enviar el archivo temporal como respuesta
+    res.download(tempFilePath, 'Formulario_Gravamen.pdf', (err) => {
+      if (err) {
+        console.error('Error al enviar el archivo:', err);
+        res.status(500).json({ message: 'Error al descargar el PDF.' });
+      }
+
+      // Eliminar el archivo temporal después de enviarlo
+      fs.unlinkSync(tempFilePath);
+      console.log('Archivo temporal eliminado.');
+    });
+  } catch (error) {
+    console.error('Error al rellenar el PDF:', error);
+    res.status(500).json({ message: 'Error al generar el PDF' });
   }
 });
 
+// Ruta para rellenar el PDF de Búsqueda
 app.post('/generar-pdf-busqueda', async (req, res) => {
+  // Datos de facturación (compartidos con gravamen)
+  const { nombre, cedulaFacturacion, direccion, correo, telefono } = req.body;
+
+  // Datos específicos de búsqueda
+  const {
+    nombresCompletos,
+    cedula,
+    estadoCivil,
+    nombresSolicitante,
+    cedulaSolicitante,
+    estadoCivilSolicitante,
+    declaracionUso,
+    recepcionDocumento,
+    correoRecepcion
+  } = req.body;
+
+  // Validar campos requeridos
+  if (
+    !nombre ||
+    !cedulaFacturacion ||
+    !direccion ||
+    !telefono ||
+    !nombresCompletos ||
+    !cedula ||
+    !estadoCivil ||
+    !nombresSolicitante ||
+    !cedulaSolicitante ||
+    !estadoCivilSolicitante ||
+    !declaracionUso ||
+    !recepcionDocumento ||
+    (recepcionDocumento === 'Electrónico' && !correoRecepcion)
+  ) {
+    return res.status(400).json({ message: 'Todos los campos son requeridos.' });
+  }
+
   try {
-    const requiredFields = [
-      'nombre', 'cedulaFacturacion', 'direccion', 'telefono',
-      'nombresCompletos', 'cedula', 'estadoCivil', 'nombresSolicitante',
-      'cedulaSolicitante', 'estadoCivilSolicitante', 'declaracionUso',
-      'recepcionDocumento'
-    ];
-    
-    const missingFields = requiredFields.filter(field => !req.body[field]);
-    if (missingFields.length > 0) {
-      throw new Error(`Faltan campos requeridos: ${missingFields.join(', ')}`);
+    // Ruta al archivo PDF existente (diferente al de gravamen)
+    const pdfPath = path.join(__dirname, 'pdfs', '1.pdf');
+
+    // Verificar si el archivo PDF existe
+    if (!fs.existsSync(pdfPath)) {
+      console.error('El archivo PDF no se encontró en:', pdfPath);
+      return res.status(404).json({ message: 'El archivo PDF no se encontró.' });
     }
 
-    await handlePdfGeneration(req, res, '1.pdf', busquedaFields, 'Formulario_Busqueda.pdf');
-  } catch (error) {
-    res.status(400).json({ 
-      success: false,
-      message: error.message
+    // Cargar el PDF existente
+    const pdfBytes = fs.readFileSync(pdfPath);
+
+    // Cargar el PDF con pdf-lib
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+
+    // Obtener la primera página del PDF
+    const pages = pdfDoc.getPages();
+    const firstPage = pages[0];
+
+    // Rellenar el PDF con los datos de facturación
+
+
+    firstPage.drawText(`${nombre}`, { x: 95, y: 665, size: 12 });
+    firstPage.drawText(`${cedulaFacturacion}`, { x: 300, y: 635, size: 12 });
+    firstPage.drawText(`${direccion}`, { x: 80, y: 612, size: 12 });
+    firstPage.drawText(`${correo}`, { x: 135, y: 590, size: 12 });
+    firstPage.drawText(`${telefono}`, { x: 440, y: 590, size: 12 });
+
+
+
+    // Rellenar el PDF con los datos de búsqueda
+    firstPage.drawText(`${nombresCompletos}`, { x: 95, y: 520, size: 12 });
+    firstPage.drawText(`${cedula}`, { x: 270, y: 488, size: 12 });
+    firstPage.drawText(`${estadoCivil}`, { x: 460, y: 488, size: 12 });
+    firstPage.drawText(`${nombresSolicitante}`, { x: 180, y: 440, size: 12 });
+    firstPage.drawText(`${cedulaSolicitante}`, { x: 390, y: 410, size: 12 });
+    firstPage.drawText(`${estadoCivilSolicitante}`, { x: 140, y: 388, size: 12 });
+    firstPage.drawText(`${declaracionUso}`, { x: 110, y: 366, size: 12 });
+
+    // Rellenar el PDF con los datos de recepción del documento
+    if (recepcionDocumento === 'Presencial') {
+      firstPage.drawText('X', { x: 161, y: 183, size: 12 });
+    } else if (recepcionDocumento === 'Electrónico') {
+      firstPage.drawText('X', { x: 161, y: 143, size: 12 });
+      firstPage.drawText(`${correoRecepcion}`, { x: 80, y: 107, size: 12 });
+    }
+
+    // Agregar Lugar y Fecha automáticamente
+    const lugar = 'Pedro Vicente Maldonado';
+    const fechaActual = new Date().toLocaleDateString('es-ES', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
     });
+
+    firstPage.drawText(`${lugar}`, { x: 390, y: 222, size: 12 });
+    firstPage.drawText(`${fechaActual}`, { x: 340, y: 200, size: 12 });
+
+    // Guardar el PDF modificado
+    const modifiedPdfBytes = await pdfDoc.save();
+
+    // Guardar el PDF modificado en un archivo temporal
+    const tempFilePath = path.join(__dirname, 'temp.pdf');
+    fs.writeFileSync(tempFilePath, modifiedPdfBytes);
+
+    // Enviar el archivo temporal como respuesta
+    res.download(tempFilePath, 'Formulario_Busqueda.pdf', (err) => {
+      if (err) {
+        console.error('Error al enviar el archivo:', err);
+        res.status(500).json({ message: 'Error al descargar el PDF.' });
+      }
+
+      // Eliminar el archivo temporal después de enviarlo
+      fs.unlinkSync(tempFilePath);
+      console.log('Archivo temporal eliminado.');
+    });
+  } catch (error) {
+    console.error('Error al rellenar el PDF:', error);
+    res.status(500).json({ message: 'Error al generar el PDF' });
   }
 });
 
-// 9. Health Check
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    apiVersion: '1.0.0',
-    environment: process.env.NODE_ENV,
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      generarGravamen: '/generar-pdf',
-      generarBusqueda: '/generar-pdf-busqueda'
-    }
-  });
-});
-
-// 10. Manejo de errores
-app.use((err, req, res, next) => {
-  console.error('Error:', err.stack);
-  res.status(500).json({
-    success: false,
-    message: 'Error interno del servidor',
-    ...(process.env.NODE_ENV === 'development' && { error: err.message })
-  });
-});
-
-// 11. Iniciar servidor
+// Iniciar el servidor
 app.listen(port, () => {
-  console.log(`🚀 Servidor escuchando en puerto ${port}`);
-  console.log(`🔒 Entorno: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🌍 Orígenes permitidos: ${allowedOrigins.join(', ')}`);
-  console.log(`🔗 Endpoint API: ${process.env.REACT_APP_API_URL}`);
+  console.log(`Servidor backend escuchando en http://localhost:${port}`);
 });
